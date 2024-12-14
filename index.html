@@ -20,7 +20,7 @@
                     <a href="#title">Navigation</a>
                 </div>
                 <ul class="sidebar-nav">
-                    <li class="sidebar-nav-item">
+                    <li class="sidebar-nav-item"> 
                         <button type="button" class="btn btn-light">
                             <a href="#part1">
                                 <span>Part 1</span>
@@ -29,8 +29,15 @@
                     </li>
                     <li class="sidebar-nav-item">
                         <button type="button" class="btn btn-light">
-                            <a href="#part1">
+                            <a href="#part2">
                                 <span>Part 2</span>
+                            </a>
+                        </button>
+                    </li>
+                    <li class="sidebar-nav-item">
+                        <button type="button" class="btn btn-light">
+                            <a href="#part3">
+                                <span>BW</span>
                             </a>
                         </button>
                     </li>
@@ -238,7 +245,7 @@
                     <div class="single_col">
                         <div class="image">
                             <figure> 
-                                <img src="data/p1/hidden_50_fox_psnr.png" width="200">
+                                <img src="data/p1/hidden_50_fox_psnr.png" width="400">
                                 <figcaption class="caption"> 
                                     PSNR Plot
                                     <br/>
@@ -585,20 +592,631 @@
                             </figure>
                         </div>
                     </div>
-
                 </div>
+
                 <h2 id="part2"> Part 2: Fit a Neural Radiance Field from Multi-view Images </h2>
 
                 <div class="text-container"> 
+                    <h3> Part 2.1: Create Rays from Cameras </h3>
+                    <h4> Camera to World Coordinate Conversion</h4>
+                    <p> 
+                        To transform the given camera coordinates into the world coordinates, I used the left multiplication of
+                        the camera-to-world matrix on the homogeneous camera coordinates to recover the world coordinate. The c2w 
+                        matrix is given in the dataset. The output world coordinates are homoegneous, so we need to remove the appended
+                        1 to recover the true 3D coordinates.
+                    </p>
 
-                    
+                    <h4> Pixel to Camera Coordinate Conversion</h4>
+                    <p> 
+                        To transform the pixel coordinates into the camera coordinates, I first constructed the K matrix using the given focal length (same for fx and fy).
+                        Then, I chose a depth of s = 1 as the multiplier to the pixel coordinates. Finally, I took the inverse of the K matrix and multiplied it on the left of the
+                        pixel coordinates to recover the camera coordinates. Note that the resulting camera coordinates are not homogeneous, while the input pixel coordinates are.
+                    </p>
 
+                    <p> 
+                        I implemented the batched version for both of the functions.
+                    </p>
 
-                    
-                    
+                    <h4> Pixel to Ray </h4>
 
+                    <p> 
+                        To convert pixels to rays, we need to first transform the pixel coordinates into world coordinates using the above functions in tandem.
+                        Then, we need to recover the origin of the rays (the location of the cameras [ox, oy] in the K matrix), and the direction of the rays (the normalized vector between the ray origin and the point of observation in world coordinate.)
+                        Note that the torch.norm function behaves differently from np.linalg.norm, so we need to make adjustments accordingly for direction normalization.
+                        I implemted a batched version for this function as well.
+                    </p>
                 </div>
+
+                <h3> Part 2.2: Sampling Rays </h3>
+
+                <h4> Sampling Rays from Images </h4>
+
+                <p> 
+                    To sample rays from the images, I used two approaches. 
+                </p>
+
+                <ul>
+                    <li>
+                        The first approach is to sample M random images with replacement and then sample N // M pixels from each chosen image.
+                    </li>
+                    <li>
+                        The second approach is to sample N random pixels from a linearized pixel matrix that consists of all coordinates from the given images.
+                    </li>
+                </ul>
+
+                <p>
+                    For both approaches, I used the chosen coordinates as the input for the functions from the previous parts to generate rays_d and rays_o, the directions and origin of the rays.
+                    To reduce the training overhead, I precomputed all possible rays and only sampled the cached rays during training.
+                </p>
+
+                <h3> Part 2.3: Putting the Dataloading All Together</h3>
+
+                <p> After putting everything into a class called RaysData, I then visualized the sampling process using the provided code. </p>
+                
+                <div class="single_col">
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/sphere_sample.png" width="400">
+                            <figcaption class="caption"> 
+                                All Cameras Visualization
+                            </figcaption>
+                        </figure>
+                    </div>
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/one_sample.png" width="400">
+                            <figcaption class="caption"> 
+                                One Camera Visualization
+                            </figcaption>
+                        </figure>
+                    </div>
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/one_right_top.png" width="400">
+                            <figcaption class="caption"> 
+                                One Camera Top Right Visualization
+                            </figcaption>
+                        </figure>
+                    </div>
+                </div>
+
+                <h3> Part 2.4: Neural Radiance Field </h3>
+
+                <p>
+                    In this part, I constructed a MLP model for 3D Neural Radiance Field, which extends the model from part 1. 
+                    There are two inputs to the model, one is the 3D world coordinates of the obersvation points, and two is the 3D ray directions.
+                    I used sinosoidal positional encoding to encode both inputs and fed them into the network. To prevent the network from forgetting the
+                    initial input, I used a skip connection using torch.cat. The output of the network is a 3D RGB color coordinate and a 1D density value.
+                    Here is the detailed network structure.
+                </p>
+
+                <div class="single_col">
+                    <div class="image">
+                        <figure> 
+                            <img src="mlp_nerf.png" width="400">
+                            <figcaption class="caption"> 
+                                Model Architecture
+                            </figcaption>
+                        </figure>
+                    </div>
+                </div>
+                
+                <h3> Part 2.5: Volume Rendering </h3>
+
+                <p> 
+                    In this part, I implemented the volumetric rendering function to get render the predicted image from the model outputs. I followed the
+                    following equation using torch.cumsum for vectorizating.
+
+                    \[
+                    \begin{align}
+                    \hat{C}(\mathbf{r})=\sum_{i=1}^N T_i\left(1-\exp \left(-\sigma_i \delta_i\right)\right) \mathbf{c}_i, \text { where } T_i=\exp
+                    \left(-\sum_{j=1}^{i-1} \sigma_j \delta_j\right) \end{align}
+                    \]
+                </p>
+
+                <p> 
+                    I then trained the model using the following hyperparameters.
+                </p>
+
+                <ul>
+                    <li>
+                        Ray_d PE dimension: L = 4
+                    </li>
+                    <li>
+                        3D coordinate PE dimension: L = 15
+                    </li>
+                    <li>
+                        Adam Optimizer lr = 0.0005
+                    </li>
+                    <li>
+                        Number of iterations: 6000
+                    </li>
+                </ul>
+
+                <h4> Validation Results </h4>
+
+                <div class="three_col">
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/val_lego_2_0.png" width="200">
+                            <figcaption class="caption"> 
+                                Iteration: 0
+                                <br/>
+                                Lego Validation 1 
+                            </figcaption>
+                        </figure>
+                    </div>
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/val_lego_2_100.png" width="200">
+                            <figcaption class="caption"> 
+                                Iteration: 100
+                                <br/>
+                                Lego Validation 1 
+                            </figcaption>
+                        </figure>
+                    </div>
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/val_lego_2_200.png" width="200">
+                            <figcaption class="caption"> 
+                                Iteration: 200
+                                <br/>
+                                Lego Validation 1 
+                            </figcaption>
+                        </figure>
+                    </div>
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/val_lego_2_800.png" width="200">
+                            <figcaption class="caption"> 
+                                Iteration: 800
+                                <br/>
+                                Lego Validation 1 
+                            </figcaption>
+                        </figure>
+                    </div>
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/val_lego_2_1000.png" width="200">
+                            <figcaption class="caption"> 
+                                Iteration: 1000
+                                <br/>
+                                Lego Validation 1 
+                            </figcaption>
+                        </figure>
+                    </div>
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/val_lego_2_5900.png" width="200">
+                            <figcaption class="caption"> 
+                                Iteration: 5900
+                                <br/>
+                                Lego Validation 1 
+                            </figcaption>
+                        </figure>
+                    </div>
+                </div>
+
+                <div class="three_col">
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/val_lego_2_0.png" width="200">
+                            <figcaption class="caption"> 
+                                Iteration: 0
+                                <br/>
+                                Lego Validation 2
+                            </figcaption>
+                        </figure>
+                    </div>
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/val_lego_2_100.png" width="200">
+                            <figcaption class="caption"> 
+                                Iteration: 100
+                                <br/>
+                                Lego Validation 2
+                            </figcaption>
+                        </figure>
+                    </div>
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/val_lego_2_200.png" width="200">
+                            <figcaption class="caption"> 
+                                Iteration: 200
+                                <br/>
+                                Lego Validation 2
+                            </figcaption>
+                        </figure>
+                    </div>
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/val_lego_2_800.png" width="200">
+                            <figcaption class="caption"> 
+                                Iteration: 800
+                                <br/>
+                                Lego Validation 2
+                            </figcaption>
+                        </figure>
+                    </div>
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/val_lego_2_1000.png" width="200">
+                            <figcaption class="caption"> 
+                                Iteration: 1000
+                                <br/>
+                                Lego Validation 2
+                            </figcaption>
+                        </figure>
+                    </div>
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/val_lego_2_5900.png" width="200">
+                            <figcaption class="caption"> 
+                                Iteration: 5900
+                                <br/>
+                                Lego Validation 2
+                            </figcaption>
+                        </figure>
+                    </div>
+                </div>
+
+                <div class="three_col">
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/val_lego_3_0.png" width="200">
+                            <figcaption class="caption"> 
+                                Iteration: 0
+                                <br/>
+                                Lego Validation 3
+                            </figcaption>
+                        </figure>
+                    </div>
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/val_lego_3_100.png" width="200">
+                            <figcaption class="caption"> 
+                                Iteration: 100
+                                <br/>
+                                Lego Validation 3
+                            </figcaption>
+                        </figure>
+                    </div>
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/val_lego_3_200.png" width="200">
+                            <figcaption class="caption"> 
+                                Iteration: 200
+                                <br/>
+                                Lego Validation 3
+                            </figcaption>
+                        </figure>
+                    </div>
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/val_lego_3_800.png" width="200">
+                            <figcaption class="caption"> 
+                                Iteration: 800
+                                <br/>
+                                Lego Validation 3
+                            </figcaption>
+                        </figure>
+                    </div>
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/val_lego_3_1000.png" width="200">
+                            <figcaption class="caption"> 
+                                Iteration: 1000
+                                <br/>
+                                Lego Validation 3
+                            </figcaption>
+                        </figure>
+                    </div>
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/val_lego_3_5900.png" width="200">
+                            <figcaption class="caption"> 
+                                Iteration: 5900
+                                <br/>
+                                Lego Validation 3
+                            </figcaption>
+                        </figure>
+                    </div>
+                </div>
+
+                <div class="three_col">
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/val_lego_4_0.png" width="200">
+                            <figcaption class="caption"> 
+                                Iteration: 0
+                                <br/>
+                                Lego Validation 4
+                            </figcaption>
+                        </figure>
+                    </div>
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/val_lego_4_100.png" width="200">
+                            <figcaption class="caption"> 
+                                Iteration: 100
+                                <br/>
+                                Lego Validation 4
+                            </figcaption>
+                        </figure>
+                    </div>
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/val_lego_4_200.png" width="200">
+                            <figcaption class="caption"> 
+                                Iteration: 200
+                                <br/>
+                                Lego Validation 4
+                            </figcaption>
+                        </figure>
+                    </div>
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/val_lego_4_800.png" width="200">
+                            <figcaption class="caption"> 
+                                Iteration: 800
+                                <br/>
+                                Lego Validation 4
+                            </figcaption>
+                        </figure>
+                    </div>
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/val_lego_4_1000.png" width="200">
+                            <figcaption class="caption"> 
+                                Iteration: 1000
+                                <br/>
+                                Lego Validation 4
+                            </figcaption>
+                        </figure>
+                    </div>
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/val_lego_4_5900.png" width="200">
+                            <figcaption class="caption"> 
+                                Iteration: 5900
+                                <br/>
+                                Lego Validation 4
+                            </figcaption>
+                        </figure>
+                    </div>
+                </div>
+
+                <div class="three_col">
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/val_lego_5_0.png" width="200">
+                            <figcaption class="caption"> 
+                                Iteration: 0
+                                <br/>
+                                Lego Validation 5
+                            </figcaption>
+                        </figure>
+                    </div>
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/val_lego_5_100.png" width="200">
+                            <figcaption class="caption"> 
+                                Iteration: 100
+                                <br/>
+                                Lego Validation 5
+                            </figcaption>
+                        </figure>
+                    </div>
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/val_lego_5_200.png" width="200">
+                            <figcaption class="caption"> 
+                                Iteration: 200
+                                <br/>
+                                Lego Validation 5
+                            </figcaption>
+                        </figure>
+                    </div>
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/val_lego_5_800.png" width="200">
+                            <figcaption class="caption"> 
+                                Iteration: 800
+                                <br/>
+                                Lego Validation 5
+                            </figcaption>
+                        </figure>
+                    </div>
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/val_lego_5_1000.png" width="200">
+                            <figcaption class="caption"> 
+                                Iteration: 1000
+                                <br/>
+                                Lego Validation 5
+                            </figcaption>
+                        </figure>
+                    </div>
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/val_lego_5_5900.png" width="200">
+                            <figcaption class="caption"> 
+                                Iteration: 5900
+                                <br/>
+                                Lego Validation 5
+                            </figcaption>
+                        </figure>
+                    </div>
+                </div>
+
+                <div class="three_col">
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/val_lego_6_0.png" width="200">
+                            <figcaption class="caption"> 
+                                Iteration: 0
+                                <br/>
+                                Lego Validation 6
+                            </figcaption>
+                        </figure>
+                    </div>
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/val_lego_6_100.png" width="200">
+                            <figcaption class="caption"> 
+                                Iteration: 100
+                                <br/>
+                                Lego Validation 6
+                            </figcaption>
+                        </figure>
+                    </div>
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/val_lego_6_200.png" width="200">
+                            <figcaption class="caption"> 
+                                Iteration: 200
+                                <br/>
+                                Lego Validation 6
+                            </figcaption>
+                        </figure>
+                    </div>
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/val_lego_6_800.png" width="200">
+                            <figcaption class="caption"> 
+                                Iteration: 800
+                                <br/>
+                                Lego Validation 6
+                            </figcaption>
+                        </figure>
+                    </div>
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/val_lego_6_1000.png" width="200">
+                            <figcaption class="caption"> 
+                                Iteration: 1000
+                                <br/>
+                                Lego Validation 6
+                            </figcaption>
+                        </figure>
+                    </div>
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/val_lego_6_5900.png" width="200">
+                            <figcaption class="caption"> 
+                                Iteration: 5900
+                                <br/>
+                                Lego Validation 6
+                            </figcaption>
+                        </figure>
+                    </div>
+                </div>
+
+                <h4> Validation PSNR Curves </h4>
+                <div class="three_col">
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/Lego_0_second_psnr.png" width="300">
+                            <figcaption class="caption"> 
+                                Validation 1
+                            </figcaption>
+                        </figure>
+                    </div>
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/Lego_10_second_psnr.png" width="300">
+                            <figcaption class="caption"> 
+                                Validation 2
+                            </figcaption>
+                        </figure>
+                    </div>
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/Lego_20_second_psnr.png" width="300">
+                            <figcaption class="caption"> 
+                                Validation 3
+                            </figcaption>
+                        </figure>
+                    </div>
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/Lego_30_second_psnr.png" width="300">
+                            <figcaption class="caption"> 
+                                Validation 4
+                            </figcaption>
+                        </figure>
+                    </div>
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/Lego_40_second_psnr.png" width="300">
+                            <figcaption class="caption"> 
+                                Validation 5
+                            </figcaption>
+                        </figure>
+                    </div>
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/Lego_50_second_psnr.png" width="300">
+                            <figcaption class="caption"> 
+                                Validation 6
+                            </figcaption>
+                        </figure>
+                    </div>
+                </div>
+
+                <div class="single_col">
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/combined_validation_psnr.png" width="300">
+                            <figcaption class="caption"> 
+                                Combined Validation
+                            </figcaption>
+                        </figure>
+                    </div>
+                </div>
+
+                <h4> Resulting GIF </h4>
+
+                <p> After training, I used the model to predict images on new views, and then used them to generate a 360 view of the lego.</p>
+
+                <div class="single_col">
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/lego_looping.gif" width="300">
+                            <figcaption class="caption"> 
+                                Lego Loop 
+                            </figcaption>
+                        </figure>
+                    </div>
+                </div>
+                <h2 id="part3"> Part 3: Bells and Whistles </h2>
+
+                <p> 
+                    I changed the background color of the lego scene during the rendering process. The background color is the color that is not blocked by the 
+                    lego, so I just needed to add the desired color scaled by the transmittance that is not blocked by the lego. Namely, I just need to add a layer of color
+                    that terminates at the bottom of the ray.
+                </p>
+
+                <p> Here is the result. </p>
+
+                <div class="single_col">
+                    <div class="image">
+                        <figure> 
+                            <img src="data/p2/NeRF/lego_bw.gif" width="300">
+                            <figcaption class="caption"> 
+                                Changed Background.
+                            </figcaption>
+                        </figure>
+                    </div>
+                </div>
+
+                
+                
+
             </div>
+            
         </div>
+        
     </body>
 </html>
